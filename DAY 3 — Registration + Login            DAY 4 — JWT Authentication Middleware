@@ -1,0 +1,382 @@
+
+POST /api/auth/register
+POST /api/auth/login
+GET  /api/auth/me
+Step 1: Auth controller
+
+Create:
+
+server/controllers/authController.js
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+
+const generateToken = (userId) => {
+  return jwt.sign(
+    { userId },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+};
+
+const register = async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        message: "All fields are required"
+      });
+    }
+
+    const existingUser = await User.findOne({ email });
+
+    if (existingUser) {
+      return res.status(400).json({
+        message: "User already exists"
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = await User.create({
+      name,
+      email,
+      password: hashedPassword
+    });
+
+    const token = generateToken(user._id);
+
+    res.status(201).json({
+      message: "Registration successful",
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+const login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(401).json({
+        message: "Invalid email or password"
+      });
+    }
+
+    const passwordMatch = await bcrypt.compare(
+      password,
+      user.password
+    );
+
+    if (!passwordMatch) {
+      return res.status(401).json({
+        message: "Invalid email or password"
+      });
+    }
+
+    const token = generateToken(user._id);
+
+    res.json({
+      message: "Login successful",
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+module.exports = {
+  register,
+  login
+};
+Step 2: Auth routes
+
+Create:
+
+server/routes/authRoutes.js
+const express = require("express");
+
+const {
+  register,
+  login
+} = require("../controllers/authController");
+
+const router = express.Router();
+
+router.post("/register", register);
+router.post("/login", login);
+
+module.exports = router;
+Step 3: Add route to server
+
+Update server.js:
+
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
+
+const connectDB = require("./config/db");
+const authRoutes = require("./routes/authRoutes");
+
+dotenv.config();
+
+connectDB();
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.use("/api/auth", authRoutes);
+
+app.get("/", (req, res) => {
+  res.json({
+    message: "Collaborative Workspace API is running"
+  });
+});
+
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+Step 4: Test registration
+
+Use Postman.
+
+POST
+
+http://localhost:5000/api/auth/register
+
+Body → JSON:
+
+{
+  "name": "Vaishnavi",
+  "email": "vaishnavi@example.com",
+  "password": "123456"
+}
+
+Expected:
+
+{
+  "message": "Registration successful",
+  "token": "JWT_TOKEN",
+  "user": {
+    "id": "...",
+    "name": "Vaishnavi",
+    "email": "vaishnavi@example.com"
+  }
+}
+Step 5: Test login
+
+POST
+
+http://localhost:5000/api/auth/login
+
+Body:
+
+{
+  "email": "vaishnavi@example.com",
+  "password": "123456"
+}
+
+You should receive a JWT token.
+
+
+
+Create:
+
+server/middleware/authMiddleware.js
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+
+const protect = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        message: "Not authorized"
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
+
+    const user = await User.findById(decoded.userId)
+      .select("-password");
+
+    if (!user) {
+      return res.status(401).json({
+        message: "User not found"
+      });
+    }
+
+    req.user = user;
+
+    next();
+
+  } catch (error) {
+    return res.status(401).json({
+      message: "Invalid or expired token"
+    });
+  }
+};
+
+module.exports = protect;
+
+Now protected APIs can use:
+
+router.get("/protected", protect, controller);
+DAY 5 — Workspace APIs
+
+Create:
+
+server/controllers/workspaceController.js
+const Workspace = require("../models/Workspace");
+
+const createWorkspace = async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name) {
+      return res.status(400).json({
+        message: "Workspace name is required"
+      });
+    }
+
+    const workspace = await Workspace.create({
+      name,
+      owner: req.user._id,
+      members: [req.user._id]
+    });
+
+    res.status(201).json({
+      message: "Workspace created successfully",
+      workspace
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+const getMyWorkspaces = async (req, res) => {
+  try {
+    const workspaces = await Workspace.find({
+      members: req.user._id
+    }).populate("owner", "name email");
+
+    res.json(workspaces);
+
+  } catch (error) {
+    res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+module.exports = {
+  createWorkspace,
+  getMyWorkspaces
+};
+
+Create:
+
+server/routes/workspaceRoutes.js
+const express = require("express");
+
+const protect = require("../middleware/authMiddleware");
+
+const {
+  createWorkspace,
+  getMyWorkspaces
+} = require("../controllers/workspaceController");
+
+const router = express.Router();
+
+router.post("/", protect, createWorkspace);
+router.get("/", protect, getMyWorkspaces);
+
+module.exports = router;
+
+Add to server.js:
+
+const workspaceRoutes = require("./routes/workspaceRoutes");
+
+app.use("/api/workspaces", workspaceRoutes);
+
+Now you can create a workspace using:
+
+POST /api/workspaces
+
+with:
+
+{
+  "name": "My Development Team"
+}
+
+and the JWT in:
+
+Authorization: Bearer YOUR_TOKEN
+DAY 6 — Workspace Members
+
+For Day 6, we'll add member invitations and workspace membership.
+
+Update the workspace model later to support roles:
+
+members: [
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+    },
+
+    role: {
+      type: String,
+      enum: ["owner", "admin", "member"],
+      default: "member"
+    }
+  }
+]
+
+This gives us:
+
+Owner
+  ↓
+Admin
+  ↓
+Member
+
+which we'll use for authorization.
